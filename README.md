@@ -2,7 +2,7 @@
 
 将 [chat.deepseek.com](https://chat.deepseek.com) 网页端的**历史对话导入为 DeepSeek Harness (DSH) 的正式会话**：导入后会话出现在左侧工作区列表中，**可以打开、查看完整历史，并选择模型继续对话**。
 
-> 本项目是 DSH 的**动态 Cordis 插件**（Host + Client 双半部），不是 npm 包。加载方式见下文「安装」。
+> 本项目是一个**可安装的 DSH 插件包**（`dsh.bundle` manifest：host 半部 + web client 半部），可通过 `dsh plugin add` 安装。安装方式见下文「安装」。
 
 ---
 
@@ -30,15 +30,13 @@
 
 ## 安装
 
-这是一个 **动态 Cordis 插件**（运行在当前 DSH 进程内，定义+激活即可用）。安装步骤：
+插件声明了 `dsh.bundle`（见 `package.json`），可通过 `dsh plugin add` 安装：
 
-1. 打开一个 DSH **cordis** 会话，把下面这段提示词发给 agent：
+```sh
+dsh plugin add wpc0323/deepseek-web-import
+```
 
-   > 请读取本仓库根目录的 `host.js` 和 `client.js`，分别作为 `code.host` 和 `code.client`，调用 `cordis_define`（`plugin.kind: "new"`，`idPrefix: "dswi"`）定义插件，然后 `cordis_run` 激活它。如果有 Client 审批请求，请批准。
-
-2. 批准后，设置 → 左侧会出现 **「DeepSeek 对话导入」** 页面。
-
-> 说明：动态插件在 DSH 进程重启后需要重新加载（重复上面一步即可）。
+> 说明：安装后**重启 DSH**，设置 → 左侧会出现 **「DeepSeek 对话导入」** 页面。仓库中的 `lib/index.js` 是 host 半部（提供同源 JSON 路由），`lib/client.js` 是 web client 半部（设置页 UI）；二者通过 `webServer` 路由 + `fetch` 通信。
 
 ---
 
@@ -52,33 +50,29 @@
 4. 每条对话旁：**选择工作区** → 点「导入为会话」。
 5. **导入对话后请刷新网页**，然后在左侧工作区点开新会话 → 选模型 → 继续对话。
 
+### 示例
+
+```text
+1. 打开设置 → DeepSeek 对话导入
+2. 粘贴 userToken → 保存（状态变为「已配置」）
+3. 点「获取对话目录」→ 看到你的 DeepSeek 对话列表（标题 + 日期）
+4. 在「sharp加载失败解决」那一行选工作区 dsh-work → 点「导入为会话」
+5. 刷新网页 → 左侧工作区出现「sharp加载失败解决」→ 点开即可继续对话
+```
+
+> 导入只写持久化（`sessionPersistence`），不进入 live store，因此导入的会话可以被正常打开、续聊（不会报 `cannot prepare session while it is live`）。
+
 ---
 
 ## 会话日志损坏（corrupt session log）排查与修复
 
-现象：重启 DSH 后某个会话报
-
-```
-Error: corrupt session log: seq gap in committed region at line N (expected X, got Y)
-```
-
-（历史加载失败 / resume 失败 / 无法选模型，都是同一个根因。）
-
-**根因**：DSH 的 JSONL 会话日志要求事件 `seq` 从 0 连续递增。触发条件需要**两条同时成立**：
-1. `session/end-seed` 由**活动会话（live session）**作为**单独一次 append** 写入日志（DSH 自身的 agent 循环在会话收尾时会这么做）；
-2. 下次启动时 DSH 的恢复游标**漏算了这条 end-seed**，于是新写入的第一批事件**复用已提交的 seq**，造成重复 → 提交区截断 → 后面的事件全部读不出来。
-
-**这与本插件无关，而且插件的写法恰好避开了触发**：插件导入的会话把标题 + 全部消息 + `session/end-seed` 作为**同一批** `sessionPersistence.append` 一次性写入持久层，**不经过**活动会话的单独 append，因此「导入 + 重启」不会触发该 bug（已实测：所有导入的会话体检全部 OK，损坏的只有 DSH 自己创建的活动会话）。
-
-> ⚠️ 注意：若你**打开导入的会话继续对话**，后续写入改由 DSH 的活动会话机制负责，就回到与普通会话相同的 DSH bug 风险——这仍是 DSH 自身问题（普通会话同样可能中招），与本插件无关。
-
-**修复**：把重复的那一行（与上一条 seq 相同的事件）删掉即可。删除前先备份
-`~/.dsh/sessions/**/session.jsonl.zstd`；删除后要保证 seq 连续，并避免破坏
-`agent/inbox/spliced` 的插入/移除配对。本仓库不附带修复脚本（仅保留插件本体）。
+这是 **DSH 自身的恢复游标问题**（`session/end-seed` 由活动会话单独 append、重启后游标漏算导致 seq 复用），与本插件无关；插件的导入方式（整批写入）恰好避开了触发。现象、根因、修复方法见 [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)。
 
 ---
 
 ## 实现原理（简述）
+
+- **架构**：`lib/index.js`（host 半部）用 DSH 的 `webServer` 注册同源 JSON 路由（`/__deepseek-web-import/*`）；`lib/client.js`（web client 半部）在设置页通过 `fetch` 调用这些路由——不依赖动态插件机制，`dsh plugin add` 安装后常驻。
 
 - **接口**（DeepSeek 网页端非官方内部 API，已从官方 JS 包逆向确认）：
   - 会话目录：`GET /api/v0/chat_session/fetch_page?count=100`
@@ -95,7 +89,7 @@ Error: corrupt session log: seq gap in committed region at line N (expected X, g
 - 密码登录会被 DeepSeek 的**人机验证（AWS WAF）**拦截，必须使用 `userToken` 方式。
 - 对话目录一次最多拉取 **100 条**：实测 `fetch_page` 响应仅含 `chat_sessions` + `has_more`，无可用游标字段（`cursor`/`lte_cursor` 参数均不生效），超过 100 条时只返回最新 100 条。
 - `userToken` 有时效（约数小时~数天），失效后重新复制保存即可。
-- 动态插件仅在当前进程内运行；**重启 DSH 后需重新加载**（按「安装」步骤重复一次）。
+- 插件通过 `dsh plugin add` 安装为 bundle 插件，安装后常驻（重启 DSH 不受影响）。
 
 ---
 
