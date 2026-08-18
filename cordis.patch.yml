@@ -1,0 +1,5 @@
+# deepseek-web-import: import chat.deepseek.com conversations into DSH as sessions.
+# Inserted by `dsh plugin add` (bundle patch).
+- insert:
+    - id: deepseek-web-import
+      name: 'deepseek-web-import'

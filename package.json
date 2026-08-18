@@ -1,0 +1,39 @@
+{
+  "name": "deepseek-web-import",
+  "version": "0.1.0",
+  "description": "Import chat.deepseek.com conversations into DeepSeek Harness as resumable sessions, from a settings-page UI.",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wpc0323/deepseek-web-import.git"
+  },
+  "main": "./lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
+    }
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml"
+  ],
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "plugin",
+    "dsh-plugin",
+    "web-ui",
+    "import",
+    "conversations",
+    "session"
+  ],
+  "license": "MIT"
+}
