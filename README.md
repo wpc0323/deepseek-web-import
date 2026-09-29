@@ -70,6 +70,20 @@ dsh plugin add wpc0323/deepseek-web-import
 
 ---
 
+## 兼容性（DSH Session 格式 v0–v4）
+
+DSH 每个版本写入一种会话格式（v0…v4），插件按运行中的版本自适应，实测矩阵：
+
+| DSH 版本 | Session 格式 | 状态 |
+|----------|--------------|------|
+| 0.1.1-rc.2 – 0.1.2-rc.1 | v0 | ✅ 真实后端实测 |
+| （未发布） | v1 | ✅ 按 v0 建模 + 运行时方言证据 |
+| 0.1.3-alpha.2 | v2 | ✅ 真实后端实测 |
+| 0.1.5-rc.2 – 0.1.6-alpha.2 | v3 | ✅ 真实后端实测 |
+| 0.1.7-rc.2+ | v4 | ✅ 真实后端实测 |
+
+验证方式与证据出处见 [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md)；`npm test` 跑单测，`sh test/matrix.sh` 跑完整矩阵。
+
 ## 实现原理（简述）
 
 - **架构**：`lib/index.js`（host 半部）用 DSH 的 `webServer` 注册同源 JSON 路由（`/__deepseek-web-import/*`）；`lib/client.js`（web client 半部）在设置页通过 `fetch` 调用这些路由——不依赖动态插件机制，`dsh plugin add` 安装后常驻。
@@ -77,7 +91,8 @@ dsh plugin add wpc0323/deepseek-web-import
 - **接口**（DeepSeek 网页端非官方内部 API，已从官方 JS 包逆向确认）：
   - 会话目录：`GET /api/v0/chat_session/fetch_page?count=100`
   - 对话历史：`GET /api/v0/chat/history_messages?chat_session_id=<uuid>`
-- **导入为会话**：把历史消息转换成合法 DSH 会话事件（`turn/start → user/message → step/start → assistant/message → step/end → turn/end`，surface 事件带 `surfaceOp: "append"`，含 `session/title` 与 `session/end-seed`），通过 `sessionPersistence.create + append` **只写持久化**，再 `workspace.attachSession` 挂载到所选工作区 —— **不进入 live store**，因此可以被正常打开/对话。
+- **导入为会话**：把历史消息转换成合法 DSH 会话事件（`turn/start → user/message → step/start → assistant/message → step/end → turn/end`，surface 事件带 `surfaceOp: "append"`，含 `session/title` 与 `session/end-seed`），**只写持久化**（v0/v1 走 `create(meta)` + `append(id, events)`，v2+ 走 `create(header)` 返回的写句柄），再 `workspace.attachSession` 挂载到所选工作区 —— **不进入 live store**，因此可以被正常打开/对话。历史以「未回答的用户提问」结尾时保留未闭合的 turn，DSH 打开会话时会自行补 `interrupted` 收尾。
+- **正文与思维链**：DeepSeek 的正文在 `fragments`（`REQUEST`/`RESPONSE`/`THINK`），用户提问取 `REQUEST`，助手回答取 `RESPONSE` 作正文、`THINK` 作 `reasoning` 块；事件时间取消息的 `inserted_at`。
 - **网络层**：`web.fetch` 无法携带自定义 Header，插件通过 `subprocess` 起 Node 发送带 `Authorization: Bearer` 的请求；请求启用了 `rejectUnauthorized: false`（本机 TLS 证书校验失败的环境限制）。
 - **Token 存储**：使用 DSH `credentials` 服务（`$DSH_HOME/.credentials.yaml`），不写入会话/设置文档。
 
@@ -92,6 +107,10 @@ dsh plugin add wpc0323/deepseek-web-import
 - 插件通过 `dsh plugin add` 安装为 bundle 插件，安装后常驻（重启 DSH 不受影响）。
 
 ---
+
+- 单次导入的响应上限约 **2M 字符**（超长对话返回 `too_large`，而不是静默截断）。
+- 只有附件、没有文字的消息会导入为一句明确说明；`SYSTEM`/`TOOL` 等非对话角色会被忽略。
+- 导入按 `history_messages` 返回的单条主线顺序进行（不解析 `parent_id` 分支）：若 DeepSeek 针对「编辑/重新生成」返回兄弟分支，会被当作先后两轮导入。
 
 ## 安全提醒
 

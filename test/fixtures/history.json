@@ -1,0 +1,107 @@
+[
+  {
+    "message_id": 1,
+    "parent_id": null,
+    "model": "",
+    "role": "USER",
+    "thinking_enabled": true,
+    "status": "FINISHED",
+    "inserted_at": 1700000000.0,
+    "fragments": [
+      {
+        "id": 1,
+        "type": "REQUEST",
+        "content": "How do I export my chat history?"
+      }
+    ]
+  },
+  {
+    "message_id": 2,
+    "parent_id": 1,
+    "model": "",
+    "role": "ASSISTANT",
+    "thinking_enabled": true,
+    "status": "FINISHED",
+    "inserted_at": 1700000005.5,
+    "fragments": [
+      {
+        "id": 2,
+        "type": "THINK",
+        "content": "The user wants to export a conversation."
+      },
+      {
+        "id": 3,
+        "type": "TOOL_SEARCH",
+        "content": "found 3 pages"
+      },
+      {
+        "id": 4,
+        "type": "TOOL_OPEN",
+        "content": null
+      },
+      {
+        "id": 5,
+        "type": "RESPONSE",
+        "content": "Open the sidebar menu and choose Export."
+      }
+    ]
+  },
+  {
+    "message_id": 3,
+    "parent_id": 2,
+    "model": "",
+    "role": "USER",
+    "thinking_enabled": false,
+    "status": "FINISHED",
+    "inserted_at": 1700000100.25,
+    "fragments": [
+      {
+        "id": 6,
+        "type": "REQUEST",
+        "content": "Does it keep the thinking blocks?"
+      }
+    ]
+  },
+  {
+    "message_id": 4,
+    "parent_id": 3,
+    "model": "",
+    "role": "ASSISTANT",
+    "thinking_enabled": false,
+    "status": "FINISHED",
+    "inserted_at": 1700000103.75,
+    "fragments": [
+      {
+        "id": 7,
+        "type": "RESPONSE",
+        "content": "Yes — reasoning is imported as a reasoning block."
+      }
+    ]
+  },
+  {
+    "message_id": 5,
+    "parent_id": 4,
+    "model": "",
+    "role": "USER",
+    "thinking_enabled": false,
+    "status": "FINISHED",
+    "inserted_at": 1700000200.0,
+    "fragments": [
+      {
+        "id": 8,
+        "type": "REQUEST",
+        "content": "And if the answer never finished?"
+      }
+    ]
+  },
+  {
+    "message_id": 6,
+    "parent_id": 5,
+    "model": "",
+    "role": "ASSISTANT",
+    "thinking_enabled": false,
+    "status": "INCOMPLETE",
+    "inserted_at": 1700000201.0,
+    "fragments": []
+  }
+]
