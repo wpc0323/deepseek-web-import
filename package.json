@@ -1,6 +1,6 @@
 {
   "name": "deepseek-web-import",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Import chat.deepseek.com conversations into DeepSeek Harness as resumable sessions, from a settings-page UI.",
   "type": "module",
   "repository": {
@@ -18,7 +18,10 @@
       "patch": "./cordis.patch.yml"
     },
     "client": {
-      "platform": "web"
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-locale"
+      ]
     }
   },
   "files": [
