@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.2 (2026-11-13)
+
+### 修复
+
+- **界面语言没跟随 DSH 设置**（多语言在 0.2.0 引入，但一直不生效）：客户端插件只能使用它自己 `inject` 里声明的服务，
+  而我们的 `module.exports.inject` 只写了 `'slots'`，于是 `ctx.get('locale')` 恒为 `undefined`，界面一直回落到
+  浏览器语言（中文），即使 DSH 外壳已经切成英文。现在 `inject` 声明 `['slots', 'locale']`，并在
+  `package.json` 的 `dsh.client.inject` 里声明 `@deepseek-ai/dsh-client-locale`，保证语言服务先于本插件加载。
+- 新增两条测试锁住该约束：`inject` 必须包含 `locale`；`apply()` 在 locale 服务存在时确实走宿主语言
+  （用假 locale/slots/document 验证分区标签取英文而非浏览器语言）。
+
 ## Unreleased
 
 ### 插件市场展示（文档与素材，无运行时改动）

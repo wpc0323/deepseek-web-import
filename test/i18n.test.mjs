@@ -57,8 +57,20 @@ test('the bundle registers under its own id and hands back a plugin', async () =
   assert.equal(registration.id, 'deepseek-web-import')
   assert.equal(typeof registration.factory, 'function')
   assert.equal(typeof exports.apply, 'function')
-  assert.deepEqual(exports.inject, ['slots'])
   assert.ok(exports.__messages !== null && typeof exports.__messages === 'object', '__messages is exposed for this test')
+})
+
+test('locale is declared as a dependency, or the page ignores the Host language', async () => {
+  const { exports } = await loadClient()
+  /* A client plugin only sees the services its own `inject` names. Leaving
+     `locale` out made `ctx.get('locale')` return undefined, so the page fell
+     back to the browser language while the rest of the GUI followed the Host
+     setting — the bug this asserts against. */
+  assert.ok(
+    Array.isArray(exports.inject) && exports.inject.includes('locale'),
+    'inject must name "locale": ' + JSON.stringify(exports.inject),
+  )
+  assert.ok(exports.inject.includes('slots'), 'the settings section still needs the slot registry')
 })
 
 test('every message is a non-empty pair of zh and en strings', async () => {
@@ -126,4 +138,48 @@ test('every failure code the host answers with has a localized message', async (
   /* the two codes whose meaning is carried entirely by the dictionary */
   assert.ok(messages.errCredentials[1].length > 0)
   assert.ok(messages.errSubprocess[1].length > 0)
+})
+
+test('apply() binds the Host dictionary when the locale service is present', async () => {
+  const { exports } = await loadClient()
+  const registered = []
+  let boundNamespace = null
+  const slotLabel = []
+  const locale = {
+    register(namespace, dicts) { registered.push({ namespace, dicts }); return () => {} },
+    bind(namespace) {
+      boundNamespace = namespace
+      /* stand in for the Host chain: the English half of every pair */
+      return (key) => (exports.__messages[key] ? exports.__messages[key][1] : key)
+    },
+  }
+  const slots = {
+    inject: (_name, factory) => { const dispose = factory(); return typeof dispose === 'function' ? dispose : () => {} },
+    register: (options) => { slotLabel.push(options.label); return () => {} },
+  }
+  const dispose = []
+  const ctx = {
+    get: (name) => (name === 'locale' ? locale : name === 'slots' ? slots : undefined),
+    effect: (factory) => { const off = factory(); if (typeof off === 'function') dispose.push(off); return () => {} },
+    on: () => () => {},
+  }
+  /* apply() injects the stylesheet first, so it needs a minimal document */
+  const previousDocument = globalThis.document
+  globalThis.document = {
+    createElement: () => ({ textContent: '', parentNode: null }),
+    head: { appendChild: () => {} },
+  }
+  try {
+    exports.apply(ctx)
+  } finally {
+    if (previousDocument === undefined) delete globalThis.document
+    else globalThis.document = previousDocument
+  }
+
+  assert.equal(registered.length, 1, 'the dictionaries are registered once')
+  assert.deepEqual(Object.keys(registered[0].dicts).sort(), ['en', 'zh'])
+  assert.equal(boundNamespace, registered[0].namespace, 'translation goes through the same namespace')
+  assert.equal(typeof slotLabel[0], 'function')
+  /* the section label follows the Host language, not the browser */
+  assert.equal(slotLabel[0](), 'DeepSeek Chat Import')
 })
