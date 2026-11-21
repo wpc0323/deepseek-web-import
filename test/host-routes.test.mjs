@@ -45,7 +45,7 @@ function makeServer() {
  */
 function harness(options = {}) {
   const server = options.server ?? makeServer()
-  const calls = { created: [], appended: [], attached: [], specs: [], closed: 0 }
+  const calls = { created: [], appended: [], attached: [], specs: [], closed: 0, detached: [], archived: [] }
   const logs = []
   const transport = options.transport ?? (() => ({ status: 200, body: deepseekResponse(HISTORY) }))
   const persistence = options.persistence ?? {
@@ -84,16 +84,26 @@ function harness(options = {}) {
     set: options.credentialsSet ?? (async () => {}),
     unset: options.credentialsUnset ?? (async () => {}),
   }
+  /* `options.workspaces` supplies a richer registry for the move/archive tests:
+     each entry is {id, title, path, sessionIds}. Without it, the single default
+     workspace keeps every earlier test unchanged. */
+  const workspaceList = options.workspaces ?? [{ id: 'ws-1', title: 'ws', path: '/tmp/ws', sessionIds: [] }]
   const workspaceRegistry = {
-    list: () => [{ id: 'ws-1', title: 'ws', path: '/tmp/ws' }],
-    get: (id) => (id === 'ws-1'
-      ? {
-        id,
-        title: 'ws',
-        path: '/tmp/ws',
-        attachSession: options.attach ?? (async (sid) => { calls.attached.push(sid) }),
+    list: () => workspaceList.map((w) => ({
+      ...w,
+      sessionIds: Array.isArray(w.sessionIds) ? w.sessionIds : [],
+      detachSession: async (sid) => { calls.detached.push(sid); w.sessionIds = (w.sessionIds || []).filter((id) => id !== sid) },
+    })),
+    get: (id) => {
+      const found = workspaceList.find((w) => w.id === id)
+      if (found === undefined) return undefined
+      return {
+        ...found,
+        attachSession: options.attach ?? (async (sid) => { calls.attached.push(sid); found.sessionIds = [...(found.sessionIds || []), sid] }),
+        detachSession: async (sid) => { calls.detached.push(sid); found.sessionIds = (found.sessionIds || []).filter((x) => x !== sid) },
       }
-      : undefined),
+    },
+    archiveSession: options.archiveSession ?? (async (sid) => { calls.archived.push(sid) }),
   }
   const services = {
     webServer: server,
@@ -103,6 +113,7 @@ function harness(options = {}) {
     sessionPersistence: persistence,
     sandboxPolicy: { workspaceRoot: '/tmp' },
   }
+  if (options.sessionQuery !== undefined) services.sessionQuery = options.sessionQuery
   /* A composition missing a service is a supported state (every needle is read
      through ctx.get), so tests need to be able to leave one out. */
   for (const name of options.omit ?? []) delete services[name]
@@ -154,7 +165,7 @@ function post(server, path, body, options = {}) {
 
 test('every route is registered exactly once', () => {
   const { server } = harness()
-  assert.equal(server.exact.size, 8)
+  assert.equal(server.exact.size, 11)
 })
 
 test('a successful import writes one batch and attaches the session', async () => {
@@ -477,13 +488,13 @@ test('a second mount keeps serving after the old fiber disposes', () => {
   const server = makeServer()
   const first = []
   harness({ server, effects: first })
-  assert.equal(server.exact.size, 8)
+  assert.equal(server.exact.size, 11)
   const second = []
   harness({ server, effects: second })
-  assert.equal(server.exact.size, 8, 'the new instance reclaimed the routes')
+  assert.equal(server.exact.size, 11, 'the new instance reclaimed the routes')
   const before = server.exact.get('/__deepseek-web-import/probe')
   for (const dispose of first) dispose()
-  assert.equal(server.exact.size, 8, 'the old instance must not remove the new routes')
+  assert.equal(server.exact.size, 11, 'the old instance must not remove the new routes')
   assert.equal(server.exact.get('/__deepseek-web-import/probe'), before)
   for (const dispose of second) dispose()
   assert.equal(server.exact.size, 0, 'the current instance releases its own routes')
@@ -518,7 +529,7 @@ test('an untagged occupant of our path is treated as an earlier instance', () =>
   const path = '/__deepseek-web-import/probe'
   server.exact.set(path, { kind: 'exact', path, handler() {} })
   harness({ server })
-  assert.equal(server.exact.size, 8)
+  assert.equal(server.exact.size, 11)
   assert.equal(server.exact.get(path).owner, 'deepseek-web-import')
 })
 
@@ -682,7 +693,7 @@ test('disposing an instance twice is a harmless no-op', () => {
   const current = server.exact.get('/__deepseek-web-import/probe')
   for (const dispose of first) dispose()
   for (const dispose of first) dispose()
-  assert.equal(server.exact.size, 8, 'a stale disposer deletes nothing')
+  assert.equal(server.exact.size, 11, 'a stale disposer deletes nothing')
   assert.equal(server.exact.get('/__deepseek-web-import/probe'), current)
 })
 
@@ -695,12 +706,266 @@ test('evicting an untagged occupant is logged, a tagged one is not', () => {
     untagged.logs.some((line) => line.includes('evicting untagged route ' + untaggedPath)),
     untagged.logs.join('\n'),
   )
-  assert.equal(untaggedServer.exact.size, 8)
+  assert.equal(untaggedServer.exact.size, 11)
 
   /* our own previous instance is expected, so it is evicted silently */
   const taggedServer = makeServer()
   taggedServer.exact.set(untaggedPath, { kind: 'exact', path: untaggedPath, handler() {}, owner: 'deepseek-web-import' })
   const tagged = harness({ server: taggedServer })
   assert.ok(!tagged.logs.some((line) => line.includes('evicting untagged')), tagged.logs.join('\n'))
-  assert.equal(taggedServer.exact.size, 8)
+  assert.equal(taggedServer.exact.size, 11)
+})
+
+/* ---- imported-session management: list, move, archive ---- */
+
+/** A query service double over a fixed corpus, with titles by id. */
+function fakeQuery(records, titles = {}, events = {}) {
+  return {
+    async filterSessions(filters) {
+      const byCwd = filters.find((f) => f.kind === 'cwd')
+      const byId = filters.find((f) => f.kind === 'id')
+      return records.filter((r) => {
+        if (byId) return byId.values.includes(r.header.id)
+        if (byCwd) return byCwd.values.includes(r.header.cwd)
+        return true
+      })
+    },
+    async readTitle(id) {
+      return titles[id] === undefined ? undefined : { title: titles[id], eventSeq: 0, updatedAt: 0 }
+    },
+    /* The event vocabulary decides whether a session looks importer-written. */
+    async listEvents(id) {
+      const types = events[id]
+      if (types === undefined) throw new Error('no log for ' + id)
+      return types.map((type, seq) => ({ sessionId: id, seq, type, time: seq, surface: 'current' }))
+    },
+  }
+}
+
+/** The eight event types the importer writes, in a plausible order. */
+const IMPORTED_EVENTS = ['session/title', 'turn/start', 'step/start', 'user/message', 'assistant/message', 'step/end', 'turn/end', 'session/end-seed']
+
+test('listImported groups stored sessions by the workspace that owns their cwd', async () => {
+  const query = fakeQuery(
+    [
+      { header: { id: 'session-a', cwd: '/tmp/ws', createdAt: 100 }, live: false, persisted: true },
+      { header: { id: 'session-b', cwd: '/tmp/other', createdAt: 200 }, live: false, persisted: true },
+      { header: { id: 'session-c', cwd: '/not/a/workspace', createdAt: 300 }, live: false, persisted: true },
+    ],
+    { 'session-a': 'imported one', 'session-b': 'imported two' },
+    { 'session-a': IMPORTED_EVENTS, 'session-b': IMPORTED_EVENTS, 'session-c': IMPORTED_EVENTS },
+  )
+  const { server } = harness({
+    sessionQuery: query,
+    workspaces: [
+      { id: 'ws-1', title: 'ws', path: '/tmp/ws', sessionIds: ['session-a'] },
+      { id: 'ws-2', title: 'other', path: '/tmp/other', sessionIds: ['session-b'] },
+    ],
+  })
+  const result = await post(server, '/__deepseek-web-import/listImported', {})
+  assert.equal(result.json.ok, true, JSON.stringify(result.json))
+  /* newest first, and the session whose cwd belongs to no workspace is skipped */
+  assert.deepEqual(result.json.sessions.map((row) => row.id), ['session-b', 'session-a'])
+  assert.equal(result.json.sessions[0].workspaceTitle, 'other')
+  assert.equal(result.json.sessions[1].title, 'imported one')
+  assert.equal(result.json.workspaces.length, 2)
+})
+
+test('listImported can be narrowed to one workspace', async () => {
+  const query = fakeQuery([
+    { header: { id: 'session-a', cwd: '/tmp/ws', createdAt: 100 }, live: false, persisted: true },
+    { header: { id: 'session-b', cwd: '/tmp/other', createdAt: 200 }, live: false, persisted: true },
+  ], {}, { 'session-a': IMPORTED_EVENTS, 'session-b': IMPORTED_EVENTS })
+  const { server } = harness({
+    sessionQuery: query,
+    workspaces: [
+      { id: 'ws-1', title: 'ws', path: '/tmp/ws', sessionIds: ['session-a'] },
+      { id: 'ws-2', title: 'other', path: '/tmp/other', sessionIds: ['session-b'] },
+    ],
+  })
+  const result = await post(server, '/__deepseek-web-import/listImported', { workspaceId: 'ws-2' })
+  assert.equal(result.json.ok, true)
+  assert.deepEqual(result.json.sessions.map((row) => row.id), ['session-b'])
+})
+
+test('moveSession detaches from the source and attaches to the target', async () => {
+  const query = fakeQuery([{ header: { id: 'session-a', cwd: '/tmp/ws', createdAt: 1 }, live: false, persisted: true }], {}, { 'session-a': IMPORTED_EVENTS })
+  const { server, calls } = harness({
+    sessionQuery: query,
+    workspaces: [
+      { id: 'ws-1', title: 'ws', path: '/tmp/ws', sessionIds: ['session-a'] },
+      { id: 'ws-2', title: 'other', path: '/tmp/other', sessionIds: [] },
+    ],
+  })
+  const result = await post(server, '/__deepseek-web-import/moveSession', { sessionId: 'session-a', workspaceId: 'ws-2' })
+  assert.equal(result.json.ok, true, JSON.stringify(result.json))
+  assert.equal(result.json.moved, true)
+  assert.equal(result.json.from, 'ws-1')
+  assert.equal(result.json.workspaceId, 'ws-2')
+  assert.deepEqual(calls.detached, ['session-a'])
+  assert.deepEqual(calls.attached, ['session-a'])
+})
+
+test('moveSession refuses an unknown target or session, and is a no-op in place', async () => {
+  const query = fakeQuery([{ header: { id: 'session-a', cwd: '/tmp/ws', createdAt: 1 }, live: false, persisted: true }], {}, { 'session-a': IMPORTED_EVENTS })
+  const workspaces = [
+    { id: 'ws-1', title: 'ws', path: '/tmp/ws', sessionIds: ['session-a'] },
+    { id: 'ws-2', title: 'other', path: '/tmp/other', sessionIds: [] },
+  ]
+  const { server, calls } = harness({ sessionQuery: query, workspaces })
+
+  const unknownTarget = await post(server, '/__deepseek-web-import/moveSession', { sessionId: 'session-a', workspaceId: 'ws-404' })
+  assert.equal(unknownTarget.json.ok, false)
+  assert.equal(unknownTarget.json.error, 'no_workspace')
+
+  const unknownSession = await post(server, '/__deepseek-web-import/moveSession', { sessionId: 'session-404', workspaceId: 'ws-2' })
+  assert.equal(unknownSession.json.ok, false)
+  assert.equal(unknownSession.json.error, 'no_such_session')
+
+  /* already there: nothing moves, and no registry write happens */
+  const inPlace = await post(server, '/__deepseek-web-import/moveSession', { sessionId: 'session-a', workspaceId: 'ws-1' })
+  assert.equal(inPlace.json.ok, true)
+  assert.equal(inPlace.json.moved, false)
+  assert.deepEqual(calls.detached, [])
+  assert.deepEqual(calls.attached, [])
+})
+
+test('a failed attach puts the session back in its original workspace', async () => {
+  const query = fakeQuery([{ header: { id: 'session-a', cwd: '/tmp/ws', createdAt: 1 }, live: false, persisted: true }], {}, { 'session-a': IMPORTED_EVENTS })
+  const workspaces = [
+    { id: 'ws-1', title: 'ws', path: '/tmp/ws', sessionIds: ['session-a'] },
+    { id: 'ws-2', title: 'other', path: '/tmp/other', sessionIds: [] },
+  ]
+  /* `attach` is handed to BOTH the registry.get() target and the list() entries
+     below, so it must decide by workspace id, not by call order: the target
+     refuses once, the source accepts the rollback. */
+  const refused = []
+  const reattached = []
+  const attach = async function (sid) {
+    if (this.workspaceId === 'ws-2') { refused.push(sid); throw new Error('target refused') }
+    if (this.workspaceId === 'ws-1') reattached.push(sid)
+  }
+  const harnessed = harness({ sessionQuery: query, workspaces, attach })
+  /* The plugin reads the source from `list()` and the target from `get()`, so tag
+     each returned entity with its id for the stub above. */
+  const registry = harnessed.ctx.get('workspaceRegistry')
+  const originalList = registry.list
+  const originalGet = registry.get
+  registry.list = () => originalList().map((w) => ({ ...w, attachSession: attach.bind({ workspaceId: w.id }) }))
+  registry.get = (id) => {
+    const found = originalGet(id)
+    return found === undefined ? undefined : { ...found, attachSession: attach.bind({ workspaceId: id }) }
+  }
+
+  const result = await post(harnessed.server, '/__deepseek-web-import/moveSession', { sessionId: 'session-a', workspaceId: 'ws-2' })
+  assert.equal(result.json.ok, false)
+  assert.equal(result.json.error, 'move_failed')
+  assert.deepEqual(refused, ['session-a'], 'the target refused the attach')
+  assert.ok(harnessed.calls.detached.includes('session-a'), 'detached from the source before attaching')
+  assert.deepEqual(reattached, ['session-a'], 'rollback re-attached to the source')
+})
+
+test('archiveSession archives and drops the registry entry', async () => {
+  const { server, calls } = harness({
+    workspaces: [{ id: 'ws-1', title: 'ws', path: '/tmp/ws', sessionIds: ['session-a'] }],
+  })
+  const result = await post(server, '/__deepseek-web-import/archiveSession', { sessionId: 'session-a' })
+  assert.equal(result.json.ok, true, JSON.stringify(result.json))
+  assert.equal(result.json.archived, true)
+  assert.deepEqual(calls.archived, ['session-a'])
+  assert.deepEqual(calls.detached, ['session-a'])
+})
+
+test('archiveSession reports a refusal instead of claiming success', async () => {
+  const { server } = harness({
+    workspaces: [{ id: 'ws-1', title: 'ws', path: '/tmp/ws', sessionIds: ['session-a'] }],
+    archiveSession: async () => { throw new Error('still running') },
+  })
+  const result = await post(server, '/__deepseek-web-import/archiveSession', { sessionId: 'session-a' })
+  assert.equal(result.json.ok, false)
+  assert.equal(result.json.error, 'archive_failed')
+  assert.match(result.json.msg, /still running/)
+})
+
+test('listImported excludes DSH sessions, subagents, and anything it cannot read', async () => {
+  /* One of each kind that must NOT be listed, next to one that must. */
+  const query = fakeQuery(
+    [
+      /* an imported session: no preset, no origin, never drove a model */
+      { header: { id: 'imported', cwd: '/tmp/ws', createdAt: 500 }, live: false, persisted: true },
+      /* a DSH conversation: preset + a real model request */
+      { header: { id: 'dsh-chat', cwd: '/tmp/ws', createdAt: 400, agentPreset: 'standard' }, live: false, persisted: true },
+      /* a subagent session: origin + delegation depth */
+      { header: { id: 'subagent', cwd: '/tmp/ws', createdAt: 300, agentPreset: 'cordis', origin: 'subagent', delegationDepth: 1 }, live: false, persisted: true },
+      /* an imported header the user later kept chatting in: request/header appears */
+      { header: { id: 'continued', cwd: '/tmp/ws', createdAt: 200 }, live: false, persisted: true },
+      /* an imported header whose log this build cannot read at all */
+      { header: { id: 'unreadable', cwd: '/tmp/ws', createdAt: 100 }, live: false, persisted: true },
+      /* a settings-only log with no conversation: not an import */
+      { header: { id: 'settings-only', cwd: '/tmp/ws', createdAt: 50 }, live: false, persisted: true },
+    ],
+    { imported: 'from web', 'dsh-chat': 'a real chat', subagent: 'a subagent', continued: 'kept chatting', unreadable: 'gone', 'settings-only': 'nothing' },
+    {
+      imported: IMPORTED_EVENTS,
+      'dsh-chat': ['permission/preset', 'sandbox/mode', 'request/header', ...IMPORTED_EVENTS],
+      subagent: ['permission/preset', 'agent/inbox/spliced', ...IMPORTED_EVENTS],
+      continued: [...IMPORTED_EVENTS, 'request/header', 'system/message'],
+      'settings-only': ['permission/preset', 'sandbox/mode', 'approval/policy'],
+      /* `unreadable` deliberately has no entry: listEvents throws */
+    },
+  )
+  const { server } = harness({
+    sessionQuery: query,
+    workspaces: [{ id: 'ws-1', title: 'ws', path: '/tmp/ws', sessionIds: [] }],
+  })
+  const result = await post(server, '/__deepseek-web-import/listImported', {})
+  assert.equal(result.json.ok, true, JSON.stringify(result.json))
+  assert.deepEqual(result.json.sessions.map((row) => row.id), ['imported'])
+})
+
+test('an imported log that gained DSH settings events is still an import', async () => {
+  /* DSH appends permission/preset + sandbox/mode + approval/policy whenever the
+     session is opened, so the presence of those must not hide an import. */
+  const query = fakeQuery(
+    [{ header: { id: 'opened', cwd: '/tmp/ws', createdAt: 1 }, live: false, persisted: true }],
+    { opened: 'still an import' },
+    { opened: [...IMPORTED_EVENTS, 'permission/preset', 'sandbox/mode', 'approval/policy', 'system/message'] },
+  )
+  const { server } = harness({
+    sessionQuery: query,
+    workspaces: [{ id: 'ws-1', title: 'ws', path: '/tmp/ws', sessionIds: [] }],
+  })
+  const result = await post(server, '/__deepseek-web-import/listImported', {})
+  assert.equal(result.json.ok, true)
+  assert.deepEqual(result.json.sessions.map((row) => row.id), ['opened'])
+})
+
+test('a session whose log holds a real model turn is not imported', async () => {
+  for (const marker of ['request/header', 'assistant/attempt', 'assistant/chunk', 'tool/call']) {
+    const query = fakeQuery(
+      [{ header: { id: 'live', cwd: '/tmp/ws', createdAt: 1 }, live: false, persisted: true }],
+      { live: 'real turn' },
+      { live: [...IMPORTED_EVENTS, marker] },
+    )
+    const { server } = harness({
+      sessionQuery: query,
+      workspaces: [{ id: 'ws-1', title: 'ws', path: '/tmp/ws', sessionIds: [] }],
+    })
+    const result = await post(server, '/__deepseek-web-import/listImported', {})
+    assert.deepEqual(result.json.sessions, [], marker + ' should exclude the session')
+  }
+})
+
+test('the management routes need their services and a session id', async () => {
+  const noQuery = harness({ omit: ['sessionQuery'] })
+  const listed = await post(noQuery.server, '/__deepseek-web-import/listImported', {})
+  assert.equal(listed.json.error, 'session_query_unavailable')
+
+  const noRegistry = harness({ omit: ['workspaceRegistry'] })
+  const moved = await post(noRegistry.server, '/__deepseek-web-import/moveSession', { sessionId: 'x', workspaceId: 'y' })
+  assert.equal(moved.json.error, 'workspace_registry_unavailable')
+
+  const { server } = harness()
+  const missing = await post(server, '/__deepseek-web-import/archiveSession', {})
+  assert.equal(missing.json.error, 'missing_session')
 })
