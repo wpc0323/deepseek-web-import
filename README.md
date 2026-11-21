@@ -17,8 +17,11 @@ Import your [chat.deepseek.com](https://chat.deepseek.com) **conversation histor
 ## ✨ Features
 
 - A **"DeepSeek Chat Import"** page inside the settings panel
-- Paste a `userToken` and fetch the **conversation directory** in one click (titles + dates only; transcripts are fetched on import)
-- Pick a **target workspace** per conversation and **import it as a DSH session** in one click
+- Paste a `userToken` and fetch the **conversation directory** in one click (titles + dates only; transcripts are fetched on import), with a **search box** over titles and dates and a **collapse/expand toggle** for the list
+- Pick a **target workspace** per conversation (a labelled "Import to:" picker) and **import it as a DSH session** in one click
+- An **"Imported sessions"** panel lists everything already imported with its workspace (a **search box** over titles and workspaces, plus a **collapse/expand toggle**), and can
+  - **move** a session to another workspace (`attachSession` + `detachSession` — the log never moves, only the registry entry)
+  - **archive** it out of the lists (DSH's persistence has no delete, so the log stays on disk and stays recoverable; asks for confirmation first)
 - Imported sessions:
   - keep the original DeepSeek title
   - can be **continued with a model of your choice** (they take DSH's normal resume path, so they never hit `cannot prepare session while it is live`)
