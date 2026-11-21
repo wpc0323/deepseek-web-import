@@ -1,6 +1,6 @@
 {
   "name": "deepseek-web-import",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Import chat.deepseek.com conversations into DeepSeek Harness as resumable sessions, from a settings-page UI.",
   "type": "module",
   "repository": {
